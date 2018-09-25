@@ -46,3 +46,7 @@ You'll need:
 Billing-Anomaly-Tracker-BillingAnomalyCheckUsageTy' and look for the environment variable called 'TestMode'. Set this to false.
 
 9. To run the tool, execute the lambda function that starts with 'Billing-Anomaly-Tracker-BillingAnomalyMainFunction'. You can schedule this to be run using a CloudWatch event for regular checks.
+
+### Expected Output
+
+![alt text](https://raw.githubusercontent.com/RecursiveLoop/AWS-Billing-Anomaly-Tracker/master/BAT.png "Output")
