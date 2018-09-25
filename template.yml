@@ -1,0 +1,292 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+    BAT Billing Anomaly Tracker
+
+    Detects billing anomalies based on the CUR.
+
+##################################################################
+#
+#  Globals
+#
+##################################################################
+
+Resources:
+##################################################################
+#
+#  IAM Roles
+#
+##################################################################
+  BillingLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "lambda.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies: 
+        -
+          PolicyName: "BATPolicy"
+          PolicyDocument: 
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameters
+                  - ssm:GetParameter
+                  - ssm:GetParameterHistory
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/Billing/BAT/*'
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                  - xray:GetSamplingRules
+                  - xray:GetSamplingTargets
+                  - xray:GetSamplingStatisticSummaries
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                  - lambda:InvokeAsync
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ce:*
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:*
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - cur:*
+                  - awsbillingconsole:*Billing
+                  - budgets:ViewBudget
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:BatchWriteItem
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:DescribeTable
+                  - dynamodb:GetItem
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                  - dynamodb:UpdateItem
+                Resource: 
+                  - !GetAtt BillingAnomalyChecksTable.Arn
+                  - !GetAtt BillingAnomalyControlTable.Arn
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:ChangeMessageVisibility
+                  - sqs:GetQueueUrl
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - !GetAtt BATQueue.Arn
+                  - !GetAtt BATFinalizerQueue.Arn
+
+##################################################################
+#
+#  DynamoDB Tables
+#
+##################################################################
+  BillingAnomalyChecksTable:
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      AttributeDefinitions: 
+        - AttributeName: id
+          AttributeType: S
+      KeySchema: 
+        - AttributeName: id
+          KeyType: HASH
+      ProvisionedThroughput: 
+        ReadCapacityUnits: 50
+        WriteCapacityUnits: 50
+
+  BillingAnomalyControlTable:
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      AttributeDefinitions: 
+        - AttributeName: id
+          AttributeType: S
+      KeySchema: 
+        - AttributeName: id
+          KeyType: HASH
+      ProvisionedThroughput: 
+        ReadCapacityUnits: 50
+        WriteCapacityUnits: 50
+##################################################################
+#
+#  SNS Topics
+#
+##################################################################
+
+  NotificationSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties: 
+      DisplayName: 'BATNotifications'
+
+  NotificationSNSTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Id: BATTopicPolicy
+        Version: '2012-10-17'
+        Statement:
+        - Sid: AllowPublishPolicy
+          Effect: Allow
+          Principal:
+            AWS: !GetAtt BillingLambdaRole.Arn
+          Action: sns:Publish
+          Resource: "*"
+      Topics:
+      - !Ref NotificationSNSTopic
+
+##################################################################
+#
+#  SQS Queues
+#
+##################################################################
+  BATQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: BATQueue
+      VisibilityTimeout: 90
+  BATFinalizerQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: BATFinalizerQueue
+      VisibilityTimeout: 90
+
+##################################################################
+#
+#  Lambda Functions
+#
+##################################################################
+
+  BillingAnomalyMainFunction:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+        CodeUri: ./artifacts/BillingAnomalyMain.zip
+        Handler: BillingAnomalyMain::BillingAnomalyMain.Function::FunctionHandler
+        Runtime: dotnetcore2.1
+        MemorySize: 1024
+        Role: !GetAtt BillingLambdaRole.Arn
+        Timeout: 30
+        Tracing: Active
+        Environment:
+          Variables:
+            BatTable: !Ref BillingAnomalyChecksTable
+            ControlTable: !Ref BillingAnomalyControlTable
+            CheckUsageTypeFunction: !GetAtt BillingAnomalyCheckUsageType.Arn
+            BatQueueUrl: !Ref BATQueue
+
+  BillingAnomalyCheckUsageType:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+        CodeUri: ./artifacts/BillingAnomalyCheckUsageType.zip
+        Handler: BillingAnomalyCheckUsageType::BillingAnomalyCheckUsageType.Function::FunctionHandler
+        Runtime: dotnetcore2.1
+        Role: !GetAtt BillingLambdaRole.Arn
+        MemorySize: 1024
+        Timeout: 90
+        Tracing: Active
+        Events:
+          BATQueueEvent:
+            Type: SQS
+            Properties:
+              Queue: !GetAtt BATQueue.Arn
+              BatchSize: 5
+        Environment:
+          Variables:
+            TestMode: true
+            BatTable: !Ref BillingAnomalyChecksTable
+            ControlTable: !Ref BillingAnomalyControlTable
+            FinalizerFunction: !GetAtt BillingAnomalyFinalizer.Arn 
+            BatFinalizerQueueUrl: !Ref BATFinalizerQueue
+  
+  BillingAnomalyFinalizer:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+        CodeUri: ./artifacts/BillingAnomalyFinalizer.zip
+        Handler: BillingAnomalyFinalizer::BillingAnomalyFinalizer.Function::FunctionHandler
+        Runtime: dotnetcore2.1
+        Role: !GetAtt BillingLambdaRole.Arn
+        MemorySize: 1024
+        Timeout: 90
+        Tracing: Active
+        Events:
+          BATFinalizerQueueEvent:
+            Type: SQS
+            Properties:
+              Queue: !GetAtt BATFinalizerQueue.Arn
+              BatchSize: 1
+        Environment:
+          Variables:
+            BatTable: !Ref BillingAnomalyChecksTable
+            ControlTable: !Ref BillingAnomalyControlTable
+
+##################################################################
+#
+#  SSM Parameter Store parameters
+#
+##################################################################
+  DaysOfWeekSSMParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: '/Billing/BAT/DaysOfWeek'
+      Description: 'The days of the week to run the AWS Billing Anomaly Tracker'
+      Type: StringList
+      Value: '1,2,3,4,5,6,7'
+  UsageTypesSSMParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: '/Billing/BAT/UsageTypes'
+      Description: 'The usage types to limit the AWS Billing Anomaly Tracker'
+      Type: StringList
+      Value: '*'
+  LookBackPeriodSSMParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: '/Billing/BAT/LookBackPeriod'
+      Description: 'The period, in days, to look back to form the average.'
+      Type: String
+      Value: '30'
+  ChangeThresholdSSMParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: '/Billing/BAT/ChangeThreshold'
+      Description: 'The percentage increase that will trigger a notification.'
+      Type: String
+      Value: '0.2'
+  SnsTopicArnSSMParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: '/Billing/BAT/SNSTopicARN'
+      Description: 'The ARN of the SNS topic to trigger notifications to.'
+      Type: String
+      Value: !Ref NotificationSNSTopic
+  LinkedAccountsSSMParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: '/Billing/BAT/LinkedAccounts'
+      Description: 'The comma-separated list of account IDs to filter checks.'
+      Type: StringList
+      Value: '*'
+  MinIncreaseThresholdSSMParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: '/Billing/BAT/MinIncreaseThreshold'
+      Description: 'The minimum value, in dollars, that a usage type needs to increase by before it will trigger a notification.'
+      Type: String
+      Value: '1.0'
