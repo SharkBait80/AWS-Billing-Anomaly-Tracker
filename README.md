@@ -24,6 +24,22 @@ The application deploys:
 
 - 7 x SSM Parameters for configuration
 
+### EC2 Systems Manager Parameters
+
+* Billing/BAT/Billing/ChangeThreshold: How much the cost of a usage group type needs to change before a notification is triggered
+
+* Billing/BAT/Billing/LookBackPeriod: The number of days to look back to form a baseline. This is set at 30 by default.
+
+* Billing/BAT/Billing/DaysOfWeek: This specifies the days of the week to include in the check. The default is 1, 2, 3, 4, 5, which is Mon - Fri. If the customer wants to check all days of the week, this should be left blank or 1, 2, 3, 4, 5,6,7
+
+* Billing/BAT/Billing/Services: (Optional) If set, this will limit the number of services that are checked. This should be the name of the services in a comma-separated list.
+
+* Billing/BAT/Billing/LinkedAccounts: (Optional) If set, this will limit the accounts that are checked. This should be the IDs of the accounts in a comma-separated list.
+
+* Billing/BAT/Billing/UsageTypes: (Optional) If set, this will limit the usage types that are checked. This should be the usage types in a comma-separated list.
+
+* Billing/BAT/Billing/SNSTopicARN: The ARN of the SNS topic to send notifications to.
+
 ### Instructions
 
 You'll need:
